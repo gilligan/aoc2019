@@ -1,13 +1,29 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveFunctor #-}
 
 module Day5 where
 
-
 import qualified Data.Text as T
 
+setAt :: [a] -> Int -> a -> [a]
+setAt xs i e = case splitAt i xs of
+    (old, _:new) -> old ++ e : new
+    _ -> xs
+
+class Memory m where
+    get :: m a -> Int -> a
+    set :: m a -> Int -> a -> m a
+
+newtype MemList a = MemList [a]
+    deriving (Eq, Foldable, Functor)
+
+instance Memory MemList where
+    get (MemList xs) n   = xs !! n
+    set (MemList xs) n x = MemList $ setAt xs n x
+
 type PC = Int
-type Mem = [Int]
 type Addr = Int
 
 data Mode = Immediate | Position
@@ -29,11 +45,6 @@ data Inst = Add Param Param Param
           | Halt
           deriving (Show, Eq)
 
-set :: [a] -> Int -> a -> [a]
-set xs i e = case splitAt i xs of
-    (old, _:new) -> old ++ e : new
-    _ -> xs
-
 showInst :: Int -> String
 showInst n = pad 5 $ show n
     where
@@ -46,7 +57,7 @@ parseInst (showInst -> s@(a:b:c:d:e:_)) = InstInfo opcode (toMode c) (toMode b) 
         toMode '0' = Position
         toMode '1' = Immediate
 
-decode :: (PC, Mem) -> Inst
+decode :: Memory m => (PC, m Int) -> Inst
 decode (pc, m)
   | opcode == 1 = Add (Param (p1 info) v1) (Param (p2 info) v2) (Param (p3 info) v3)
   | opcode == 2 = Mul (Param (p1 info) v1) (Param (p2 info) v2) (Param (p3 info) v3)
@@ -55,45 +66,45 @@ decode (pc, m)
   | opcode == 99 = Halt
   | otherwise = error $ "invalid opcode: " ++ show info ++ show pc
   where
-      info = parseInst $ m !! pc
+      info = parseInst $ get m pc
       opcode = op info
-      v1 = m !! (pc + 1)
-      v2 = m !! (pc + 2)
-      v3 = m !! (pc + 3)
+      v1 = get m (pc + 1)
+      v2 = get m (pc + 2)
+      v3 = get m (pc + 3)
 
-fetch :: Mem -> Param -> Int
+fetch :: Memory m => m Int -> Param -> Int
 fetch _ (Param Immediate n) = n
-fetch m (Param Position n) = m !!n
+fetch m (Param Position n) = get m n
 
-runAdd :: (PC, Mem) -> Int -> Int -> Int -> IO (PC, Mem)
+runAdd :: Memory m => (PC, m Int) -> Int -> Int -> Int -> IO (PC, m Int)
 runAdd (pc, m) p1 p2 dest = return  (pc', mem')
     where
         pc' = pc + 4
         mem' = set m dest (p1 + p2)
 
-runMul :: (PC, Mem) -> Int -> Int -> Int -> IO (PC, Mem)
+runMul :: Memory m => (PC, m Int) -> Int -> Int -> Int -> IO (PC, m Int)
 runMul (pc, m) p1 p2 dest = return (pc', mem')
     where
         pc' = pc + 4
         mem' = set m dest (p1 * p2)
 
-runRead :: (PC, Mem) -> Int -> IO (PC, Mem)
+runRead :: Memory m => (PC, m Int) -> Int -> IO (PC, m Int)
 runRead (pc, m) dest = do
     putStr "Enter value :"
     x <- read <$> getLine :: IO Int
     return (pc + 2, set m dest x)
 
-runPrint :: (PC, Mem) -> Int -> IO (PC, Mem)
+runPrint :: Memory m =>  (PC, m Int) -> Int -> IO (PC, m Int)
 runPrint (pc, m) p = do
     putStrLn $ "print " ++ show p
     return (pc + 2, m)
 
-runHalt :: (PC, Mem) -> IO (PC, Mem)
+runHalt :: Memory m => (PC, m Int) -> IO (PC, m Int)
 runHalt (pc, m) = do
     print "HALT"
     return (-1, m)
 
-step :: (PC, Mem) -> IO (PC, Mem)
+step :: Memory m => (PC, m Int) -> IO (PC, m Int)
 step s@(pc, m) = do
     let inst = decode s
     case inst of
@@ -107,7 +118,7 @@ step s@(pc, m) = do
             dest (Param Position n) = n
             dest (Param Immediate n) = error "dest cannot be in immediate mode"
 
-runProgram :: (PC, Mem) -> IO ()
+runProgram :: Memory m => (PC, m Int) -> IO ()
 runProgram s = do
     (p, m) <- step s
     if p > 0
