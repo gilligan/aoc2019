@@ -2,9 +2,13 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 module Day5 where
 
+import           Control.Monad.IO.Class
+import           Control.Monad.State
+import           Control.Monad.State.Class
 import qualified Data.Text as T
 
 setAt :: [a] -> Int -> a -> [a]
@@ -13,16 +17,22 @@ setAt xs i e = case splitAt i xs of
     _ -> xs
 
 class Memory m where
-    get :: m a -> Int -> a
-    set :: m a -> Int -> a -> m a
+    getM :: m a -> Int -> a
+    setM :: m a -> Int -> a -> m a
 
 newtype MemList a = MemList [a]
     deriving (Eq, Foldable, Functor)
 
 instance Memory MemList where
-    get (MemList xs) n   = xs !! n
-    set (MemList xs) n x = MemList $ setAt xs n x
+    getM (MemList xs) n   = xs !! n
+    setM (MemList xs) n x = MemList $ setAt xs n x
 
+type VmState = (PC, MemList Int)
+
+newtype VmT m a = VM { runVM :: StateT VmState m a }
+    deriving (Functor, Applicative, Monad, MonadState VmState, MonadIO)
+
+type VM = VmT IO
 type PC = Int
 type Addr = Int
 
@@ -66,64 +76,61 @@ decode (pc, m)
   | opcode == 99 = Halt
   | otherwise = error $ "invalid opcode: " ++ show info ++ show pc
   where
-      info = parseInst $ get m pc
+      info = parseInst $ getM m pc
       opcode = op info
-      v1 = get m (pc + 1)
-      v2 = get m (pc + 2)
-      v3 = get m (pc + 3)
+      v1 = getM m (pc + 1)
+      v2 = getM m (pc + 2)
+      v3 = getM m (pc + 3)
 
 fetch :: Memory m => m Int -> Param -> Int
 fetch _ (Param Immediate n) = n
-fetch m (Param Position n) = get m n
+fetch m (Param Position n) = getM m n
 
-runAdd :: Memory m => (PC, m Int) -> Int -> Int -> Int -> IO (PC, m Int)
-runAdd (pc, m) p1 p2 dest = return  (pc', mem')
-    where
-        pc' = pc + 4
-        mem' = set m dest (p1 + p2)
+type F2 = (Int -> Int -> Int)
 
-runMul :: Memory m => (PC, m Int) -> Int -> Int -> Int -> IO (PC, m Int)
-runMul (pc, m) p1 p2 dest = return (pc', mem')
-    where
-        pc' = pc + 4
-        mem' = set m dest (p1 * p2)
+runA2 :: F2 -> Int -> Int -> Int -> VM ()
+runA2 f p1 p2 dest = modify (\(pc, m) -> (pc + 4, setM m dest (f p1 p2)))
 
-runRead :: Memory m => (PC, m Int) -> Int -> IO (PC, m Int)
-runRead (pc, m) dest = do
-    putStr "Enter value :"
-    x <- read <$> getLine :: IO Int
-    return (pc + 2, set m dest x)
+runRead :: Int -> VM ()
+runRead dest = do
+    (pc, m) <- get
+    liftIO $ putStr "Enter value :"
+    x <- liftIO (read <$> getLine)
+    put (pc + 2, setM m dest x)
 
-runPrint :: Memory m =>  (PC, m Int) -> Int -> IO (PC, m Int)
-runPrint (pc, m) p = do
-    putStrLn $ "print " ++ show p
-    return (pc + 2, m)
+runPrint :: Int -> VM ()
+runPrint p = do
+    (pc, m) <- get
+    liftIO $ putStrLn $ "print " ++ show p
+    put (pc + 2, m)
 
-runHalt :: Memory m => (PC, m Int) -> IO (PC, m Int)
-runHalt (pc, m) = do
-    print "HALT"
-    return (-1, m)
+runHalt :: VM ()
+runHalt = do
+    (pc, m) <- get
+    liftIO $ putStrLn "HALT"
+    put (-1, m)
 
-step :: Memory m => (PC, m Int) -> IO (PC, m Int)
-step s@(pc, m) = do
-    let inst = decode s
+step ::VM ()
+step = do
+    (pc, m) <- get
+    let inst = decode (pc, m)
     case inst of
-        (Add p1 p2 p3) -> runAdd s (f p1) (f p2) (dest p3)
-        (Mul p1 p2 p3) -> runMul s (f p1) (f p2) (dest p3)
-        (Read p1)      -> runRead s (dest p1)
-        (Print p1)     -> runPrint s (f p1)
-        Halt           -> runHalt s
+        (Add p1 p2 p3) -> runA2 (+) (fetch m p1) (fetch m p2) (dest p3)
+        (Mul p1 p2 p3) -> runA2 (*) (fetch m p1) (fetch m p2) (dest p3)
+        (Read p1)      -> runRead (dest p1)
+        (Print p1)     -> runPrint (fetch m p1)
+        Halt           -> runHalt
         where
-            f = fetch m
             dest (Param Position n) = n
             dest (Param Immediate n) = error "dest cannot be in immediate mode"
 
-runProgram :: Memory m => (PC, m Int) -> IO ()
-runProgram s = do
-    (p, m) <- step s
+runProgram :: VM ()
+runProgram = do
+    step
+    (p, m) <- get
     if p > 0
-       then runProgram (p, m)
-       else print "Done."
+       then runProgram
+       else liftIO $ putStrLn "Done"
 
 testCode :: [Int]
 testCode = read . T.unpack <$> T.splitOn ","  "3,225,1,225,6,6,1100,1,238,225,104,0,1101,86,8,225,1101,82,69,225,101,36,65,224,1001,224,-106,224,4,224,1002,223,8,223,1001,224,5,224,1,223,224,223,102,52,148,224,101,-1144,224,224,4,224,1002,223,8,223,101,1,224,224,1,224,223,223,1102,70,45,225,1002,143,48,224,1001,224,-1344,224,4,224,102,8,223,223,101,7,224,224,1,223,224,223,1101,69,75,225,1001,18,85,224,1001,224,-154,224,4,224,102,8,223,223,101,2,224,224,1,224,223,223,1101,15,59,225,1102,67,42,224,101,-2814,224,224,4,224,1002,223,8,223,101,3,224,224,1,223,224,223,1101,28,63,225,1101,45,22,225,1101,90,16,225,2,152,92,224,1001,224,-1200,224,4,224,102,8,223,223,101,7,224,224,1,223,224,223,1101,45,28,224,1001,224,-73,224,4,224,1002,223,8,223,101,7,224,224,1,224,223,223,1,14,118,224,101,-67,224,224,4,224,1002,223,8,223,1001,224,2,224,1,223,224,223,4,223,99,0,0,0,677,0,0,0,0,0,0,0,0,0,0,0,1105,0,99999,1105,227,247,1105,1,99999,1005,227,99999,1005,0,256,1105,1,99999,1106,227,99999,1106,0,265,1105,1,99999,1006,0,99999,1006,227,274,1105,1,99999,1105,1,280,1105,1,99999,1,225,225,225,1101,294,0,0,105,1,0,1105,1,99999,1106,0,300,1105,1,99999,1,225,225,225,1101,314,0,0,106,0,0,1105,1,99999,7,677,677,224,102,2,223,223,1005,224,329,1001,223,1,223,1008,226,226,224,1002,223,2,223,1005,224,344,1001,223,1,223,1107,677,226,224,1002,223,2,223,1006,224,359,1001,223,1,223,107,677,677,224,102,2,223,223,1005,224,374,101,1,223,223,1108,677,226,224,102,2,223,223,1005,224,389,1001,223,1,223,1007,677,677,224,1002,223,2,223,1005,224,404,101,1,223,223,1008,677,226,224,102,2,223,223,1005,224,419,101,1,223,223,1108,226,677,224,102,2,223,223,1006,224,434,1001,223,1,223,8,677,226,224,1002,223,2,223,1005,224,449,101,1,223,223,1008,677,677,224,1002,223,2,223,1006,224,464,1001,223,1,223,1108,226,226,224,1002,223,2,223,1005,224,479,1001,223,1,223,1007,226,677,224,102,2,223,223,1005,224,494,1001,223,1,223,1007,226,226,224,102,2,223,223,1005,224,509,101,1,223,223,107,677,226,224,1002,223,2,223,1006,224,524,1001,223,1,223,108,677,677,224,102,2,223,223,1006,224,539,101,1,223,223,7,677,226,224,102,2,223,223,1006,224,554,1001,223,1,223,1107,226,677,224,102,2,223,223,1005,224,569,101,1,223,223,108,677,226,224,1002,223,2,223,1006,224,584,101,1,223,223,108,226,226,224,102,2,223,223,1006,224,599,1001,223,1,223,1107,226,226,224,102,2,223,223,1006,224,614,1001,223,1,223,8,226,677,224,102,2,223,223,1006,224,629,1001,223,1,223,107,226,226,224,102,2,223,223,1005,224,644,101,1,223,223,8,226,226,224,102,2,223,223,1006,224,659,101,1,223,223,7,226,677,224,102,2,223,223,1005,224,674,101,1,223,223,4,223,99,226"
