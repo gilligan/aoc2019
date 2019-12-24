@@ -1,22 +1,10 @@
-{-# LANGUAGE OverloadedStrings #-}
-
-module Main where
-
-main :: IO ()
-main = do
-    input <- readFile "./input"
-
-    putStrLn "part 1:"
-    print $ solve1 input
-
-    putStrLn "part 2:"
-    print $ solve2 input
+module Day1 where
 
 --
 -- Part 1
 --
 calc :: Float -> Integer
-calc x = (floor (x / 3)) - 2
+calc x = floor (x / 3) - 2
 
 solve1 :: String -> Integer
 solve1 = sum

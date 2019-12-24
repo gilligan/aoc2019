@@ -2,7 +2,7 @@
 
 let
   haskellPackages = pkgs.haskell.packages.${compiler};
-  drv = haskellPackages.callCabal2nix "day01" ./. {};
+  drv = haskellPackages.callCabal2nix "aoc" ./. {};
 in
   {
     aoc = drv;
